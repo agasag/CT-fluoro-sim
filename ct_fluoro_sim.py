@@ -191,8 +191,13 @@ drr_clahe = clahe.apply(drr_uint8)
 plt.imshow(drr_clahe, cmap='gray')
 #plt.pause(.1)
 
-# --- (12) Cleanup ---
+##########################################################################################
+# --- (12) Postprocessing ---
+# todo: window/level adjustment? filtering? 
+
+# --- (13) Cleanup ---
 astra.data3d.delete(vol_id)
 astra.data3d.delete(sino_id)
 astra.projector.delete(proj_id)
 astra.algorithm.delete(alg_id)
+
