@@ -65,7 +65,25 @@ print(f"====== CT volume shape (Z, Y, X): {ct_array.shape}")
 # Convert HU to linear attenuation coefficient (approximate)
 mu_water = 0.02  # cm^-1 at ~70 keV
 #mu_array = mu_water * (1 + ct_array / 1000)# (ct_array + 1000) / 1000 * 0.2  # [cm^-1], approx scaling
-mu_array = np.clip((ct_array + 1000) / 1000 * 0.02, 0, 0.05)
+
+# commented
+#mu_array = np.clip((ct_array + 1000) / 1000 * 0.02, 0, 0.05)
+
+# segment into Air / Soft Tissue / Bone ---
+labels = np.zeros_like(ct_array)
+labels[ct_array < -300] = 0                        # Air
+labels[(ct_array >= -300) & (ct_array < 200)] = 1  # Soft tissue
+labels[ct_array >= 200] = 2                        # Bone
+
+# assign Attenuation Coefficients (approx. for 70 keV) ---
+mu_air = 0.0001
+mu_soft = 0.17
+mu_bone = 0.5
+mu_array = (
+    (labels == 0) * mu_air +
+    (labels == 1) * mu_soft +
+    (labels == 2) * mu_bone
+).astype(np.float32)
 
 # get spacing
 spacing = sitk_image.GetSpacing()  # (x_spacing, y_spacing, z_spacing)
@@ -142,6 +160,7 @@ print(f"====== Sinogram shape: {sinogram.shape}")  # Expect (num_angles, det_row
 chosen_angle_index = 160
 line_integral = sinogram[:, chosen_angle_index, :]  # shape (det_row_count, angles, det_col_count) todo: why not (det, det, angles)
 print(f"====== Extracted projection shape: {line_integral.shape}")
+line_integral *= 0.01
 
 ##########################################################################################
 # --- (9) SIMULATE FLUOROSCOPY, i.e. Beer-Lambert law + todo noise? + gamma correction? todo! ---
@@ -157,47 +176,46 @@ I_noisy = I  # No noise added
 ##########################################################################################
 # --- (10) log + normalize
 drr = -np.log(I_noisy / I0 + 1e-10)  #  attenuation map ---> according to beer-lambert law
-drr_clipped = np.clip(drr, 0, np.percentile(drr, 99))
+drr_clipped = drr#np.clip(drr, 0, np.percentile(drr, 99))
 drr_norm = (drr_clipped - np.min(drr_clipped)) / (np.max(drr_clipped) - np.min(drr_clipped))
 
 print(f"====== 2D normalized image (result) shape: {drr_norm.shape}")
 
-##########################################################################################
-# --- (11) Display ---
-
-# just normalized image
-plt.figure(figsize=(8, 8))
-plt.imshow(drr_norm, cmap='gray')
-plt.title(f"Simulated fluoroscopy at angle {chosen_angle_index} ({np.degrees(angles[chosen_angle_index]):.1f}°)")
-plt.axis('off')
-plt.show()
-#plt.pause(0.1)
-
 # normalized image, non-negative (i.e. bones are dark)
 drr_positive = 1.0 - drr_norm  # invert grayscale
-plt.imshow(drr_positive, cmap='gray')
-#plt.pause(.1)
 
 # gamma correction
-gamma = 0.6  # < 1 increases contrast in dark areas (bone)
+gamma = 0.7  # < 1 increases contrast in dark areas (bone)
 drr_gamma = drr_positive**gamma
-plt.imshow(drr_gamma, cmap='gray')
-#plt.pause(.1)
 
 # CLAHE - todo: is it efficient for our case?
 drr_uint8 = (drr_positive * 255).astype(np.uint8)
 clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
 drr_clahe = clahe.apply(drr_uint8)
-plt.imshow(drr_clahe, cmap='gray')
-#plt.pause(.1)
+
+##########################################################################################
+# --- (11) Display ---
+
+figure, axis = plt.subplots(1, 4)
+
+axis[0].imshow(drr_clipped, cmap='gray')
+axis[0].set_title("DRR")
+
+axis[1].imshow(drr_clipped, cmap='gray')
+axis[1].set_title("DRR - norm")
+
+axis[2].imshow(drr_gamma, cmap='gray')
+axis[2].set_title("DRR - positive")
+
+axis[3].imshow(drr_clahe, cmap='gray')
+axis[3].set_title("DRR - CLAHE")
 
 ##########################################################################################
 # --- (12) Postprocessing ---
-# todo: window/level adjustment? filtering? 
+# todo: window/level adjustment? filtering?
 
 # --- (13) Cleanup ---
 astra.data3d.delete(vol_id)
 astra.data3d.delete(sino_id)
 astra.projector.delete(proj_id)
 astra.algorithm.delete(alg_id)
-
