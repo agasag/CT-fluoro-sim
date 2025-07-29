@@ -30,7 +30,7 @@ def detect_image_type(path):
     return "unknown"
 
 ##########################################################################################
-# --- (1) LOAD DATA ---
+# --- (1a) LOAD DATA ---
 # Path to the folder containing DICOM slices or path to nifti file
 data_dir = "E:/LIDC/NBIA/LIDC-IDRI-0004/01-01-2000-NA-NA-91780/3000534.000000-NA-58228/"
 data_dir_type = detect_image_type(data_dir)
@@ -54,14 +54,87 @@ elif data_dir_type == 'nifti':
     print('=== nifti ===')
     sitk_image = sitk.ReadImage(data_dir)
 
-##########################################################################################
-# --- (2) LOAD CT AND CONVERT HU to mu ---
-
 ct_array = sitk.GetArrayFromImage(sitk_image).astype(np.float32)
-ct_array = np.flip(ct_array, axis=(0,2))  # flip Y and X (todo: check if it's neccessary)
+ct_array = np.flip(ct_array, axis=(0,2))  # flip Y and X (todo: check if it's neccessary) # 241, 512, 512
 
 print(f"====== CT volume shape (Z, Y, X): {ct_array.shape}")
+# --- (1b) LOAD SEGMENTATIONS (to limt ROI) ---
+seg_paths = {
+    'aorta': "aorta.nii.gz",
+    'right_atrium': "heart_atrium_right.nii.gz",
+    'left_atrium': "heart_atrium_left.nii.gz",
+    'right_ventricle': "heart_ventricle_left.nii.gz",
+    'left_ventricle': "heart_ventricle_right.nii.gz",
+    'heart_myocardium': "heart_myocardium.nii.gz"
+}
 
+# Initialize combined mask as zeros
+combined_mask = np.zeros(ct_array.shape, dtype=bool)
+
+# Load each segmentation and combine
+for name, path in seg_paths.items():
+    seg_img = sitk.ReadImage(data_dir.replace('NBIA', 'NBIA_totalsegmentator') + '/' + path)
+    seg_arr = sitk.GetArrayFromImage(seg_img).astype(bool)
+    combined_mask = combined_mask | seg_arr
+
+# Now combined_mask is True where any structure exists
+
+# Find bounding box of combined structures
+
+# Initialize combined mask as zeros
+padding_mm = 0  # extra physical padding around bounding box
+spacing = sitk_image.GetSpacing()[::-1]  # spacing in (z, y, x)
+z_spacing, y_spacing, x_spacing = spacing
+shape = ct_array.shape  # (Z, Y, X)
+
+# --- Get bounding box from mask ---
+coords = np.argwhere(combined_mask)
+z_min, y_min, x_min = coords.min(axis=0)
+z_max, y_max, x_max = coords.max(axis=0)
+
+# --- Convert padding in mm to voxels ---
+pad_x = int(padding_mm / x_spacing)
+pad_y = int(padding_mm / y_spacing)
+pad_z = int(padding_mm / z_spacing)
+
+# --- Pad the bounding box ---
+"""x_min = max(x_min - pad_x, 0)
+x_max = min(x_max + pad_x, shape[2] - 1)
+
+y_min = max(y_min - pad_y, 0)
+y_max = min(y_max + pad_y, shape[1] - 1)
+
+z_min = max(z_min - pad_z, 0)
+z_max = min(z_max + pad_z, shape[0] - 1)
+"""
+# --- Determine square size ---
+width = x_max - x_min + 1
+height = y_max - y_min + 1
+side = max(width, height)
+print(side)
+
+# --- Compute extra padding to make it square ---
+extra_x = side - width
+extra_y = side - height
+
+x_min = max(x_min - extra_x // 2, 0)
+x_max = min(x_max + (extra_x - extra_x // 2), shape[2] - 1)
+
+y_min = max(y_min - extra_y // 2, 0)
+y_max = min(y_max + (extra_y - extra_y // 2), shape[1] - 1)
+
+# --- Crop CT and mask ---
+ct_roi = ct_array[z_min:z_max+1, y_min:y_max+1, x_min:x_max+1]
+mask_roi = combined_mask[z_min:z_max+1, y_min:y_max+1, x_min:x_max+1]
+
+# --- Sanity check ---
+print("Final shape (Z, Y, X):", ct_roi.shape)
+assert ct_roi.shape[1] == ct_roi.shape[2], "Slices are not square!"
+
+ct_array = ct_roi
+
+##########################################################################################
+# --- (2) CONVERT HU to mu ---
 # Convert HU to linear attenuation coefficient (approximate)
 mu_water = 0.02  # cm^-1 at ~70 keV
 #mu_array = mu_water * (1 + ct_array / 1000)# (ct_array + 1000) / 1000 * 0.2  # [cm^-1], approx scaling
@@ -85,8 +158,7 @@ mu_array = (
     (labels == 2) * mu_bone
 ).astype(np.float32)
 
-# get spacing
-spacing = sitk_image.GetSpacing()  # (x_spacing, y_spacing, z_spacing)
+
 #print("Voxel spacing (x,y,z):", spacing)
 # --- Step 2: ASTRA Volume geometry (note reversed axes order: X, Y, Z) ---
 """vol_geom = astra.create_vol_geom(
@@ -97,18 +169,18 @@ spacing = sitk_image.GetSpacing()  # (x_spacing, y_spacing, z_spacing)
 
 ##########################################################################################
 # --- (3) VOL GEOMETRY (Astra toolbox) --- (todo: check if reversed axis order isn't a bug)
+#mu_array = np.transpose(mu_array, (2, 1, 0))  # (X, Y, Z)
+# get spacing
+spacing = sitk_image.GetSpacing()  # (x_spacing, y_spacing, z_spacing)
 x_spacing, y_spacing, z_spacing = spacing[0], spacing[1], spacing[2]
-
+X, Y, Z = mu_array.shape
 vol_geom = astra.create_vol_geom(
-    int(ct_array.shape[2]),
-    int(ct_array.shape[1]),
-    int(ct_array.shape[0]),
-    -int(ct_array.shape[2])* x_spacing / 2,  int(ct_array.shape[2]) * x_spacing / 2,  # X
-    -int(ct_array.shape[1]) * y_spacing / 2,  int(ct_array.shape[1]) * y_spacing / 2,  # Y
-    -int(ct_array.shape[0])* z_spacing / 2,  int(ct_array.shape[0]) * z_spacing / 2   # Z
-)
+     Z, Y, X,
+        -Z * z_spacing / 2, Z * z_spacing / 2,
+        -Y * y_spacing / 2, Y * y_spacing / 2,
+        -X * x_spacing / 2, X * x_spacing / 2)
 
-
+vol_id = astra.data3d.create('-vol', vol_geom, data=mu_array)
 ##########################################################################################
 # --- (4) PROJECTION ANGLES ---
 num_angles = 360
@@ -185,7 +257,7 @@ print(f"====== 2D normalized image (result) shape: {drr_norm.shape}")
 drr_positive = 1.0 - drr_norm  # invert grayscale
 
 # gamma correction
-gamma = 0.7  # < 1 increases contrast in dark areas (bone)
+gamma = 0.5  # < 1 increases contrast in dark areas (bone)
 drr_gamma = drr_positive**gamma
 
 # CLAHE - todo: is it efficient for our case?
