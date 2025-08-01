@@ -13,6 +13,7 @@ import SimpleITK as sitk
 import matplotlib.pyplot as plt
 import os
 import cv2
+import nibabel
 
 def detect_image_type(path):
     """ check whether a file is NIfTi img or a folder with DICOMs; else: unknown"""
@@ -31,8 +32,8 @@ def detect_image_type(path):
 
 ##########################################################################################
 # --- (1a) LOAD DATA ---
-# Path to the folder containing DICOM slices or path to nifti file
-data_dir = "E:/LIDC/NBIA/LIDC-IDRI-0004/01-01-2000-NA-NA-91780/3000534.000000-NA-58228/"
+# Path to the folder containing DICOM slices (eor path to nifti file (incl. -> .nii.gz)
+data_dir = "Y:/s0100/ct.nii.gz" #"E:/LIDC/NBIA/LIDC-IDRI-0004/01-01-2000-NA-NA-91780/3000534.000000-NA-58228/"
 data_dir_type = detect_image_type(data_dir)
 
 if data_dir_type == 'dicom':
@@ -50,11 +51,18 @@ if data_dir_type == 'dicom':
 
     # Read the series into a 3D volume
     sitk_image = reader.Execute()
+    ct_array = sitk.GetArrayFromImage(sitk_image).astype(np.float32)
+    spacing = sitk_image.GetSpacing()[::-1]
 elif data_dir_type == 'nifti':
     print('=== nifti ===')
-    sitk_image = sitk.ReadImage(data_dir)
+    sitk_image = nibabel.load(data_dir)
+    ct_array = sitk_image.get_fdata()
+    affine = sitk_image.affine
+    img_header = sitk_image.header
+    spacing = img_header['pixdim']
+    spacing = spacing[1:4]
 
-ct_array = sitk.GetArrayFromImage(sitk_image).astype(np.float32)
+
 ct_array = np.flip(ct_array, axis=(0,2))  # flip Y and X (todo: check if it's neccessary) # 241, 512, 512
 
 print(f"====== CT volume shape (Z, Y, X): {ct_array.shape}")
@@ -73,9 +81,15 @@ combined_mask = np.zeros(ct_array.shape, dtype=bool)
 
 # Load each segmentation and combine
 for name, path in seg_paths.items():
-    seg_img = sitk.ReadImage(data_dir.replace('NBIA', 'NBIA_totalsegmentator') + '/' + path)
-    seg_arr = sitk.GetArrayFromImage(seg_img).astype(bool)
-    combined_mask = combined_mask | seg_arr
+    if data_dir_type == 'dicom':
+        seg_img = sitk.ReadImage(data_dir.replace('NBIA', 'NBIA_totalsegmentator') + '/' + path)
+        seg_arr = sitk.GetArrayFromImage(seg_img).astype(bool)
+        combined_mask = combined_mask | seg_arr
+    elif data_dir_type == 'nifti':
+        seg_img_path = os.path.join(os.path.dirname(data_dir), "segmentations") + '/' + path
+        seg_img = nibabel.load(seg_img_path)
+        seg_arr = seg_img.get_fdata().astype(bool)
+        combined_mask = combined_mask | seg_arr
 
 # Now combined_mask is True where any structure exists
 
@@ -83,7 +97,7 @@ for name, path in seg_paths.items():
 
 # Initialize combined mask as zeros
 padding_mm = 0  # extra physical padding around bounding box
-spacing = sitk_image.GetSpacing()[::-1]  # spacing in (z, y, x)
+  # spacing in (z, y, x)
 z_spacing, y_spacing, x_spacing = spacing
 shape = ct_array.shape  # (Z, Y, X)
 
@@ -171,7 +185,7 @@ mu_array = (
 # --- (3) VOL GEOMETRY (Astra toolbox) --- (todo: check if reversed axis order isn't a bug)
 #mu_array = np.transpose(mu_array, (2, 1, 0))  # (X, Y, Z)
 # get spacing
-spacing = sitk_image.GetSpacing()  # (x_spacing, y_spacing, z_spacing)
+#spacing = sitk_image.GetSpacing()  # (x_spacing, y_spacing, z_spacing)
 x_spacing, y_spacing, z_spacing = spacing[0], spacing[1], spacing[2]
 X, Y, Z = mu_array.shape
 vol_geom = astra.create_vol_geom(
