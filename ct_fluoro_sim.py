@@ -33,7 +33,7 @@ def detect_image_type(path):
 ##########################################################################################
 # --- (1a) LOAD DATA ---
 # Path to the folder containing DICOM slices (eor path to nifti file (incl. -> .nii.gz)
-data_dir = "Y:/s0100/ct.nii.gz" #"E:/LIDC/NBIA/LIDC-IDRI-0004/01-01-2000-NA-NA-91780/3000534.000000-NA-58228/"
+data_dir = "E:/s0088/ct.nii.gz" #"E:/s0088/ct.nii.gz" #"E:/LIDC/NBIA/LIDC-IDRI-0004/01-01-2000-NA-NA-91780/3000534.000000-NA-58228/"
 data_dir_type = detect_image_type(data_dir)
 
 if data_dir_type == 'dicom':
@@ -141,11 +141,30 @@ y_max = min(y_max + (extra_y - extra_y // 2), shape[1] - 1)
 ct_roi = ct_array[z_min:z_max+1, y_min:y_max+1, x_min:x_max+1]
 mask_roi = combined_mask[z_min:z_max+1, y_min:y_max+1, x_min:x_max+1]
 
+# --- Force square slices after crop ---
+z, h, w = ct_roi.shape
+if h != w:
+    pad_diff = abs(h - w)
+    if h < w:
+        # Pad height (Y) axis
+        pad_top = pad_diff // 2
+        pad_bottom = pad_diff - pad_top
+        ct_roi = np.pad(ct_roi, ((0, 0), (pad_top, pad_bottom), (0, 0)), mode='constant', constant_values=0)
+        mask_roi = np.pad(mask_roi, ((0, 0), (pad_top, pad_bottom), (0, 0)), mode='constant', constant_values=0)
+    else:
+        # Pad width (X) axis
+        pad_left = pad_diff // 2
+        pad_right = pad_diff - pad_left
+        ct_roi = np.pad(ct_roi, ((0, 0), (0, 0), (pad_left, pad_right)), mode='constant', constant_values=0)
+        mask_roi = np.pad(mask_roi, ((0, 0), (0, 0), (pad_left, pad_right)), mode='constant', constant_values=0)
+
 # --- Sanity check ---
 print("Final shape (Z, Y, X):", ct_roi.shape)
 assert ct_roi.shape[1] == ct_roi.shape[2], "Slices are not square!"
 
+# Replace original array with cropped one
 ct_array = ct_roi
+
 
 ##########################################################################################
 # --- (2) CONVERT HU to mu ---
